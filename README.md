@@ -20,9 +20,6 @@ A campus second-hand trading platform for students of Macau University of Scienc
 - 🔄 **Dual Database Engine**: Automatically tries **MySQL** connection pool; gracefully and seamlessly falls back to local **SQLite** if MySQL is unavailable, allowing instant zero-config setup!
 - 🎨 **Modern Responsive UI**: Clean, accessible, mobile-friendly interface styled with modern CSS.
 
-> ⚠️ **Note**: MUST Swap-specific features (MUST e-mail verification, wanted posts, automatic alerts,
-> in-app messages, etc.) are being developed in the course project and are **not yet included** in this base snapshot.
-
 ---
 
 ## 🛠️ Tech Stack
