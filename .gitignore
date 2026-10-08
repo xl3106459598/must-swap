@@ -1,41 +1,17 @@
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environment
-venv/
-env/
-.venv/
-
-# Environment variables
 .env
-
-# SQLite databases
+venv/
+.venv/
 *.db
+*.db-*
 *.sqlite
 *.sqlite3
-
-# Uploads (ignore user-uploaded files, preserve demo seeds and placeholder)
+backups/
 static/uploads/*
 !static/uploads/.gitkeep
-!static/uploads/campus_bicycle.jpg
-!static/uploads/casio_calculator.jpg
-!static/uploads/lab_coat.jpg
-!static/uploads/math_textbook.jpg
-!static/uploads/study_table.jpg
-!static/uploads/wireless_headphones.jpg
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
+.pytest_cache/
+.coverage
+htmlcov/
+playwright-report/
+test-results/

@@ -1,203 +1,229 @@
-"""
-db.py — Database Connection Helper (MySQL + Automatic SQLite Fallback)
-======================================================================
-Provides execute_query() for database interactions.
-- Tries MySQL connection first (configured via .env).
-- If MySQL server is not running or unconfigured, seamlessly falls back
-  to local SQLite (college_marketplace.db) so the app works immediately.
-"""
-
 import os
+import shutil
 import sqlite3
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from dotenv import load_dotenv
-
-load_dotenv()
-
-USE_SQLITE = False
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / '.env')
+USE_SQLITE = True
 connection_pool = None
-SQLITE_DB_PATH = os.path.join(os.path.dirname(__file__), 'college_marketplace.db')
+MACAU_TIMEZONE = timezone(timedelta(hours=8), 'Asia/Macau')
+LATEST_SCHEMA_VERSION = 1
+SQLITE_DB_PATH = os.getenv('SQLITE_PATH') or str(BASE_DIR / 'must_swap.db')
+SQLITE_SCHEMA = (BASE_DIR / 'schema.sql').read_text(encoding='utf-8-sig')
+_state = threading.local()
+CATEGORY_SEED = [(1, 'Textbooks & Notes', None, 1), (2, 'Electronics', None, 2), (3, 'Dorm & Daily Use', None, 3), (4, 'Furniture', None, 4), (5, 'Sports & Leisure', None, 5), (6, 'Clothing & Accessories', None, 6), (7, 'Others', None, 7)]
+ADDITIONS = {'users': {'phone': 'TEXT', 'is_verified': 'INTEGER NOT NULL DEFAULT 0', 'must_change_password': 'INTEGER NOT NULL DEFAULT 0', 'role': "TEXT NOT NULL DEFAULT 'student'", 'is_suspended': 'INTEGER NOT NULL DEFAULT 0', 'wechat_id': 'TEXT', 'meeting_places': 'TEXT', 'language': "TEXT NOT NULL DEFAULT 'en'", 'avatar': 'TEXT', 'created_at': 'TEXT'}, 'categories': {'name_zh': 'TEXT', 'is_active': 'INTEGER NOT NULL DEFAULT 1', 'sort_order': 'INTEGER NOT NULL DEFAULT 0'}, 'products': {'is_sold': 'INTEGER NOT NULL DEFAULT 0', 'image': 'TEXT', 'status': "TEXT NOT NULL DEFAULT 'available'", 'item_condition': "TEXT NOT NULL DEFAULT 'good'", 'course_code': 'TEXT', 'edition': 'TEXT', 'meeting_place': 'TEXT', 'is_hidden': 'INTEGER NOT NULL DEFAULT 0', 'expiry_reminded': 'INTEGER NOT NULL DEFAULT 0', 'expiry_reminded_at': 'TEXT', 'closed_at': 'TEXT', 'created_at': 'TEXT', 'updated_at': 'TEXT'}}
 
-# 1. Attempt MySQL connection
-try:
-    import mysql.connector
-    from mysql.connector import pooling
+def local_now():
+    return datetime.now(MACAU_TIMEZONE).replace(tzinfo=None)
 
-    db_config = {
-        'host': os.getenv('MYSQL_HOST', 'localhost'),
-        'user': os.getenv('MYSQL_USER', 'root'),
-        'password': os.getenv('MYSQL_PASSWORD', ''),
-        'database': os.getenv('MYSQL_DATABASE', 'college_marketplace'),
-        'port': int(os.getenv('MYSQL_PORT', 3306)),
-        'pool_name': 'marketplace_pool',
-        'pool_size': 5,
-        'pool_reset_session': True,
-    }
-    connection_pool = pooling.MySQLConnectionPool(**db_config)
-    print("[DB INFO] Connected to MySQL successfully.")
-except Exception as err:
-    print(f"[DB INFO] MySQL is not available ({err}).")
-    print("[DB INFO] Falling back to SQLite mode (college_marketplace.db).")
-    USE_SQLITE = True
+def now_str(days=0, minutes=0, seconds=0):
+    return (local_now() + timedelta(days=days, minutes=minutes, seconds=seconds)).strftime('%Y-%m-%d %H:%M:%S')
 
+def _path(value):
+    if value == ':memory:':
+        return value
+    candidate = Path(value).expanduser()
+    return str(candidate if candidate.is_absolute() else BASE_DIR / candidate)
 
-def _init_sqlite():
-    """Create SQLite tables if they do not exist."""
-    conn = sqlite3.connect(SQLITE_DB_PATH)
-    cursor = conn.cursor()
-    cursor.executescript("""
-        PRAGMA foreign_keys = ON;
+def _connect(path=None):
+    path = _path(path or SQLITE_DB_PATH)
+    if path != ':memory:':
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys = ON')
+    conn.execute('PRAGMA busy_timeout = 30000')
+    return conn
 
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE,
-            phone TEXT NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+def backup_database(path=None):
+    path = _path(path or SQLITE_DB_PATH)
+    if path == ':memory:' or not Path(path).exists():
+        return None
+    directory = Path(path).parent / 'backups'
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = local_now().strftime('%Y%m%d_%H%M%S_%f')
+    target = directory / (Path(path).name + '.' + stamp + '.bak')
+    source = sqlite3.connect(path)
+    backup = sqlite3.connect(target)
+    try:
+        source.backup(backup)
+    finally:
+        backup.close()
+        source.close()
+    return str(target)
 
-        CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE
-        );
+def _statements():
+    return [statement.strip() for statement in SQLITE_SCHEMA.split(';') if statement.strip()]
 
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            seller_id INTEGER NOT NULL,
-            category_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            description TEXT,
-            price REAL NOT NULL,
-            image TEXT DEFAULT NULL,
-            is_sold INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (seller_id) REFERENCES users(id) ON DELETE CASCADE,
-            FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
-        );
+def _columns(conn, table):
+    return {row['name']: row for row in conn.execute('PRAGMA table_info(' + table + ')')}
 
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER NOT NULL,
-            buyer_id INTEGER NOT NULL,
-            ordered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-            FOREIGN KEY (buyer_id) REFERENCES users(id) ON DELETE CASCADE
-        );
-
-        INSERT OR IGNORE INTO categories (id, name) VALUES
-            (1, 'Books'),
-            (2, 'Electronics'),
-            (3, 'Furniture'),
-            (4, 'Clothing'),
-            (5, 'Sports'),
-            (6, 'Stationery'),
-            (7, 'Other');
-    """)
-    conn.commit()
-    conn.close()
-
-
-if USE_SQLITE:
-    _init_sqlite()
-
-
-def get_db():
-    """Get a database connection (MySQL or SQLite)."""
-    if USE_SQLITE:
-        conn = sqlite3.connect(SQLITE_DB_PATH)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+def _migrate_core(conn):
+    legacy_products = bool(_columns(conn, 'products')) and 'status' not in _columns(conn, 'products')
+    for statement in _statements():
+        if statement.startswith('CREATE TABLE'):
+            conn.execute(statement)
+    for table, additions in ADDITIONS.items():
+        existing = _columns(conn, table)
+        for column, definition in additions.items():
+            if column not in existing:
+                conn.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
+    users = _columns(conn, 'users')
+    if users.get('phone') and users['phone']['notnull']:
+        statement = next((s for s in _statements() if s.startswith('CREATE TABLE IF NOT EXISTS users ')))
+        conn.execute(statement.replace('IF NOT EXISTS users', 'users_upgrade', 1))
+        names = list(_columns(conn, 'users_upgrade'))
+        columns = ','.join(names)
+        conn.execute('INSERT INTO users_upgrade (' + columns + ') SELECT ' + columns + ' FROM users')
+        conn.execute('DROP TABLE users')
+        conn.execute('ALTER TABLE users_upgrade RENAME TO users')
+    timestamp = now_str()
+    conn.execute("UPDATE users SET language = 'en', created_at = COALESCE(created_at, ?)", (timestamp,))
+    conn.execute('UPDATE categories SET name_zh = NULL, sort_order = CASE WHEN sort_order = 0 THEN id ELSE sort_order END')
+    conn.execute('UPDATE products SET created_at = COALESCE(created_at, ?), updated_at = COALESCE(updated_at, created_at, ?)', (timestamp, timestamp))
+    if legacy_products:
+        conn.execute("UPDATE products SET status = CASE WHEN is_sold = 1 THEN 'sold' ELSE 'available' END")
+    conn.execute("UPDATE products SET closed_at = ? WHERE status IN ('sold','expired','deleted') AND closed_at IS NULL", (timestamp,))
+    if conn.execute('SELECT COUNT(*) FROM categories').fetchone()[0] == 0:
+        conn.executemany('INSERT INTO categories(id,name,name_zh,sort_order) VALUES(?,?,?,?)', CATEGORY_SEED)
     else:
-        if connection_pool is None:
-            raise Exception("MySQL connection pool is not available.")
-        return connection_pool.get_connection()
+        for _, name, _, order in CATEGORY_SEED:
+            conn.execute('INSERT OR IGNORE INTO categories(name,sort_order) VALUES(?,?)', (name, order))
 
-
-def close_db(conn):
-    """Close connection or return to pool."""
-    if conn:
+def init_sqlite(path=None):
+    global SQLITE_DB_PATH
+    if path:
+        SQLITE_DB_PATH = _path(str(path))
+    conn = _connect()
+    try:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        current = conn.execute('SELECT COALESCE(MAX(version),0) FROM schema_migrations').fetchone()[0] if 'schema_migrations' in tables else 0
+        if current > LATEST_SCHEMA_VERSION:
+            raise RuntimeError('This database was created by a newer release. Use a matching application version.')
+        if current == LATEST_SCHEMA_VERSION:
+            return SQLITE_DB_PATH
+        if tables:
+            backup_database()
+        conn.execute('PRAGMA foreign_keys = OFF')
+        conn.execute('BEGIN IMMEDIATE')
+        _migrate_core(conn)
+        for statement in _statements():
+            if statement.startswith('CREATE INDEX'):
+                conn.execute(statement)
+        for version, name in [(1, 'Marketplace foundation')]:
+            conn.execute('INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)', (version, name, now_str()))
+        violations = conn.execute('PRAGMA foreign_key_check').fetchall()
+        if violations:
+            raise RuntimeError('Migration found inconsistent foreign keys; the original database was preserved.')
+        conn.commit()
+        return SQLITE_DB_PATH
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         conn.close()
 
+def migrate_from(source, destination=None, upload_folder=None):
+    source = Path(source).expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError('The migration source database does not exist.')
+    destination = _path(str(destination or SQLITE_DB_PATH))
+    if source == Path(destination).resolve():
+        init_sqlite(destination)
+    else:
+        if Path(destination).exists():
+            check = sqlite3.connect(destination)
+            try:
+                has_users = check.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+                if has_users and check.execute('SELECT COUNT(*) FROM users').fetchone()[0]:
+                    raise RuntimeError('The destination contains accounts. Choose an empty destination database.')
+            finally:
+                check.close()
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        original = sqlite3.connect('file:' + source.as_posix() + '?mode=ro', uri=True)
+        target = sqlite3.connect(destination)
+        try:
+            original.backup(target)
+        finally:
+            target.close()
+            original.close()
+        init_sqlite(destination)
+    uploads = Path(upload_folder or BASE_DIR / 'static' / 'uploads')
+    originals = source.parent / 'static' / 'uploads'
+    if originals.is_dir() and originals.resolve() != uploads.resolve():
+        uploads.mkdir(parents=True, exist_ok=True)
+        files = execute_query('SELECT image AS filename FROM products WHERE image IS NOT NULL UNION SELECT avatar AS filename FROM users WHERE avatar IS NOT NULL', fetchall=True)
+        for row in files:
+            name = row['filename']
+            if name and Path(name).name == name:
+                original = originals / name
+                target = uploads / name
+                if original.is_file() and (not target.exists()):
+                    shutil.copy2(original, target)
+    return destination
+
+def get_db():
+    return _connect()
 
 def dict_from_row(row):
-    """Convert sqlite3.Row or dict to standard python dictionary."""
-    if row is None:
-        return None
-    if isinstance(row, dict):
-        return row
-    return dict(row)
+    return None if row is None else dict(row)
 
+@contextmanager
+def transaction():
+    active = getattr(_state, 'connection', None)
+    if active is not None:
+        sequence = getattr(_state, 'savepoint', 0) + 1
+        _state.savepoint = sequence
+        name = 'nested_' + str(sequence)
+        active.execute('SAVEPOINT ' + name)
+        try:
+            yield active
+            active.execute('RELEASE SAVEPOINT ' + name)
+        except Exception:
+            active.execute('ROLLBACK TO SAVEPOINT ' + name)
+            active.execute('RELEASE SAVEPOINT ' + name)
+            raise
+        return
+    conn = get_db()
+    _state.connection = conn
+    _state.savepoint = 0
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _state.connection = None
+        conn.close()
 
 def execute_query(query, params=None, fetchone=False, fetchall=False, commit=False):
-    """
-    Execute a SQL query across MySQL or SQLite.
-
-    Args:
-        query   : SQL query string (uses %s placeholders)
-        params  : Tuple/list of query parameters
-        fetchone: Return a single row as dict
-        fetchall: Return all rows as list of dicts
-        commit  : Commit the transaction
-
-    Returns:
-        Query result, or lastrowid for INSERT, or None
-    """
-    conn = get_db()
-
-    if USE_SQLITE:
-        # SQLite uses ? instead of %s
-        sql_query = query.replace('%s', '?')
-        # Handle BOOLEAN syntax differences if present
-        sql_query = sql_query.replace('is_sold = FALSE', 'is_sold = 0')
-        sql_query = sql_query.replace('is_sold = TRUE', 'is_sold = 1')
-        sql_query = sql_query.replace('FALSE', '0').replace('TRUE', '1')
-
-        cursor = conn.cursor()
-        try:
-            if params:
-                cursor.execute(sql_query, params)
-            else:
-                cursor.execute(sql_query)
-
-            if commit:
-                conn.commit()
-                return cursor.lastrowid
-            if fetchone:
-                row = cursor.fetchone()
-                return dict_from_row(row)
-            if fetchall:
-                rows = cursor.fetchall()
-                return [dict_from_row(r) for r in rows]
-            return None
-        except Exception as err:
-            if commit:
-                conn.rollback()
-            raise err
-        finally:
-            cursor.close()
+    active = getattr(_state, 'connection', None)
+    conn = active if active is not None else get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(query.replace('%s', '?'), params if params is not None else ())
+        if fetchone:
+            result = dict_from_row(cursor.fetchone())
+        elif fetchall:
+            result = [dict_from_row(row) for row in cursor.fetchall()]
+        else:
+            result = cursor.lastrowid if commit else None
+        if commit and active is None:
+            conn.commit()
+        return result
+    except Exception:
+        if active is None:
+            conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        if active is None:
             conn.close()
-    else:
-        # MySQL path
-        cursor = conn.cursor(dictionary=True)
-        try:
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-
-            if commit:
-                conn.commit()
-                return cursor.lastrowid
-            if fetchone:
-                return cursor.fetchone()
-            if fetchall:
-                return cursor.fetchall()
-            return None
-        except Exception as err:
-            if commit:
-                conn.rollback()
-            raise err
-        finally:
-            cursor.close()
-            close_db(conn)
+init_sqlite()

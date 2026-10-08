@@ -1,4 +1,4 @@
-flask
-mysql-connector-python
-bcrypt
-python-dotenv
+Flask>=3.1,<4
+bcrypt>=5,<6
+python-dotenv>=1.0,<2
+Pillow>=10.1,<13

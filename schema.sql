@@ -1,71 +1,24 @@
--- ============================================================
--- College Marketplace — Database Schema
--- ============================================================
--- Tech: MySQL
--- Tables: users, categories, products, orders
--- Demonstrates: PRIMARY KEY, FOREIGN KEY, UNIQUE, AUTO_INCREMENT
--- ============================================================
-
-CREATE DATABASE IF NOT EXISTS college_marketplace;
-USE college_marketplace;
-
--- -----------------------------------------------------------
--- 1. USERS — every registered student
--- -----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
-    id          INT AUTO_INCREMENT PRIMARY KEY,
-    name        VARCHAR(100)  NOT NULL,
-    email       VARCHAR(150)  NOT NULL UNIQUE,
-    phone       VARCHAR(15)   NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+ id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
+ phone TEXT, password_hash TEXT NOT NULL, is_verified INTEGER NOT NULL DEFAULT 0,
+ must_change_password INTEGER NOT NULL DEFAULT 0, role TEXT NOT NULL DEFAULT 'student',
+ is_suspended INTEGER NOT NULL DEFAULT 0, wechat_id TEXT, meeting_places TEXT,
+ language TEXT NOT NULL DEFAULT 'en', avatar TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now','+8 hours'))
 );
-
--- -----------------------------------------------------------
--- 2. CATEGORIES — product categories
--- -----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS categories (
-    id   INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(50) NOT NULL UNIQUE
+ id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, name_zh TEXT,
+ is_active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
 );
-
--- Pre-seed categories
-INSERT IGNORE INTO categories (name) VALUES
-    ('Books'),
-    ('Electronics'),
-    ('Furniture'),
-    ('Clothing'),
-    ('Sports'),
-    ('Stationery'),
-    ('Other');
-
--- -----------------------------------------------------------
--- 3. PRODUCTS — items listed by sellers
--- -----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS products (
-    id          INT AUTO_INCREMENT PRIMARY KEY,
-    seller_id   INT           NOT NULL,
-    category_id INT           NOT NULL,
-    name        VARCHAR(200)  NOT NULL,
-    description TEXT,
-    price       DECIMAL(10,2) NOT NULL,
-    image       VARCHAR(300)  DEFAULT NULL,
-    is_sold     BOOLEAN       DEFAULT FALSE,
-    created_at  TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (seller_id)   REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+ id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ category_id INTEGER NOT NULL REFERENCES categories(id), name TEXT NOT NULL, description TEXT,
+ price REAL NOT NULL, image TEXT, is_sold INTEGER NOT NULL DEFAULT 0,
+ status TEXT NOT NULL DEFAULT 'available', item_condition TEXT NOT NULL DEFAULT 'good',
+ course_code TEXT, edition TEXT, meeting_place TEXT, is_hidden INTEGER NOT NULL DEFAULT 0,
+ expiry_reminded INTEGER NOT NULL DEFAULT 0, expiry_reminded_at TEXT, closed_at TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
-
--- -----------------------------------------------------------
--- 4. ORDERS — purchase / contact records
--- -----------------------------------------------------------
-CREATE TABLE IF NOT EXISTS orders (
-    id          INT AUTO_INCREMENT PRIMARY KEY,
-    product_id  INT NOT NULL,
-    buyer_id    INT NOT NULL,
-    ordered_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-    FOREIGN KEY (buyer_id)   REFERENCES users(id)    ON DELETE CASCADE
+CREATE TABLE IF NOT EXISTS schema_migrations (
+ version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_products_visible ON products(status,is_hidden,created_at);
