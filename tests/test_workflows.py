@@ -6,12 +6,11 @@ from pathlib import Path
 import bcrypt
 import pytest
 from PIL import Image
-TMP = Path(tempfile.mkdtemp(prefix='must_swap_stage_tests_'))
+TMP = Path(tempfile.mkdtemp(prefix='must_swap_workflow_tests_'))
 os.environ['SQLITE_PATH'] = str(TMP / 'startup.db')
-os.environ['SECRET_KEY'] = 'stage-tests-private-key-1234567890'
+os.environ['SECRET_KEY'] = 'workflow-tests-private-key-1234567890'
 from app import create_app
 import db
-STAGE = 1
 
 def token(client, path='/'):
     client.get(path)
@@ -47,19 +46,12 @@ def test_browse_and_schema(app):
     assert client.get('/listing/1').status_code == 200
     assert client.get('/user/2').status_code == 200
     assert client.get('/listing/999999999999999999999999').status_code == 404
-    assert db.execute_query('SELECT MAX(version) AS version FROM schema_migrations', fetchone=True)['version'] == STAGE
+    assert db.execute_query('SELECT MAX(version) AS version FROM schema_migrations', fetchone=True)['version'] == db.LATEST_SCHEMA_VERSION
 
 def test_available_get_routes(app):
-    client = app.test_client() if STAGE < 2 else login(app, 'seller@must.edu.mo')
+    client = app.test_client()
     conversation = None
     wanted = None
-    if STAGE >= 6:
-        buyer = login(app, 'buyer@must.edu.mo')
-        post(buyer, '/listing/1/message', {'body': 'Route check'}, '/listing/1')
-        conversation = db.execute_query('SELECT id FROM conversations', fetchone=True)['id']
-    if STAGE >= 7:
-        post(client, '/wanted/new', {'title': 'Test request', 'category_id': '3', 'max_price': '60'}, '/wanted/new')
-        wanted = db.execute_query('SELECT id FROM wanted_posts', fetchone=True)['id']
     for rule in app.url_map.iter_rules():
         if 'GET' not in rule.methods or rule.endpoint in ['static', 'uploaded_image'] or rule.endpoint.startswith('moderation.'):
             continue
@@ -71,10 +63,6 @@ def test_available_get_routes(app):
             path = url_for(rule.endpoint, **{argument: values[argument] for argument in rule.arguments})
         response = client.get(path, follow_redirects=True)
         assert response.status_code == 200, (path, response.status_code)
-    if STAGE >= 2:
-        administrator = login(app, 'admin@must.edu.mo')
-        assert administrator.get('/admin').status_code == 200
-        assert administrator.get('/admin/users').status_code == 200
 
 def test_upload_visibility_and_identifier_limits(app):
     client = app.test_client()
@@ -87,9 +75,6 @@ def test_upload_visibility_and_identifier_limits(app):
     db.execute_query('UPDATE products SET is_hidden=1 WHERE id=1', commit=True)
     for path in ['/static/uploads/proof.jpg', '/static/./uploads/proof.jpg', '/static/css/../uploads/proof.jpg', '/static/UPLOADS/proof.jpg']:
         assert client.get(path).status_code == 404, path
-    if STAGE >= 2:
-        seller = login(app, 'seller@must.edu.mo')
-        assert seller.get('/static/uploads/proof.jpg').status_code == 200
     db.execute_query('UPDATE products SET is_hidden=0 WHERE id=1', commit=True)
     db.execute_query('UPDATE users SET is_suspended=1 WHERE id=2', commit=True)
     assert client.get('/static/uploads/proof.jpg').status_code == 404
@@ -105,8 +90,6 @@ def test_static_assets_are_served_and_javascript_parses(app):
         assert response.status_code == 200, filename
         assert response.data == (project / 'static' / filename).read_bytes(), filename
     assert b'box-sizing:border-box' in client.get('/static/css/style.css').data
-    if STAGE >= 3:
-        assert b'document.querySelectorAll' in client.get('/static/js/main.js').data
     node = shutil.which('node') or str(Path(playwright.__file__).parent / 'driver' / ('node.exe' if os.name == 'nt' else 'node'))
     result = subprocess.run([node, '--check', str(project / 'static' / 'js' / 'main.js')], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
